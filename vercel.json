@@ -1,5 +1,4 @@
 {
-    "version":2,
     "builds":[
         {
             "src":"api_modelo.py",
@@ -8,9 +7,10 @@
     ],
     "routes": [
         {
-            "src": "/( .*)",
+            "src": "/(.*)",
             "dest": "api_modelo.py"
         }
     ]
 
 }
+
