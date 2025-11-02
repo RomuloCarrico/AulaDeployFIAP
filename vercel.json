@@ -1,6 +1,6 @@
 {
     "version":2,
-    "build":[
+    "builds":[
         {
             "src":"api_modelo.py",
             "use":"@vercel/python"
@@ -12,4 +12,5 @@
             "dest": "api_modelo.py"
         }
     ]
+
 }
