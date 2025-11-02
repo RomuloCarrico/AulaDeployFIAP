@@ -6,16 +6,18 @@ from functools import wraps
 from flask import Flask, request, jsonify
 import joblib
 import numpy as np
-from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime
+from sqlalchemy import create_engine, Column, Integer, Float, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+# --- Configurações ---
 JWT_SECRET = "MEUSEGREDOAQUI"
-JWL_ALGORITHM = "HS256"
+JWT_ALGORITHM = "HS256"
 JWT_EXP_DELTA_SECONDS = 3600
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("api_modelo")
 
+# --- Banco de dados ---
 DB_URL = "sqlite:///predictions.db"
 engine = create_engine(DB_URL, echo=False)
 Base = declarative_base()
@@ -31,35 +33,47 @@ class Prediction(Base):
     predicted_class = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-#Cria as tabelas no banco de dados (Em prod usar Alembic)
 Base.metadata.create_all(engine)
 
+# --- Carregamento do modelo ---
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "modelo_iris.pkl")
 model = joblib.load(MODEL_PATH)
 logger.info("Modelo carregado com sucesso.")
 
+# --- Flask app ---
 app = Flask(__name__)
-predictions_cache={}
+predictions_cache = {}
 
+# --- Usuário de teste ---
 TEST_USERNAME = "admin"
 TEST_PASSWORD = "secret"
 
+# --- Funções JWT ---
 def create_token(username):
     payload = {
         "username": username,
         "exp": datetime.datetime.utcnow() + datetime.timedelta(seconds=JWT_EXP_DELTA_SECONDS)
     }
-    token = jwt.encode(payload, JWT_SECRET, algorithm=JWL_ALGORITHM)
+    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
     return token
 
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        #pegar o token do header Authorization: Bearer<token>
-        #decodificar e checar expiração
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Token ausente"}), 401
+        token = auth_header.split(" ")[1]
+        try:
+            jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        except jwt.ExpiredSignatureError:
+            return jsonify({"error": "Token expirado"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"error": "Token inválido"}), 401
         return f(*args, **kwargs)
     return decorated
 
+# --- Endpoints ---
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json(force=True)
@@ -67,24 +81,12 @@ def login():
     password = data.get("password")
     if username == TEST_USERNAME and password == TEST_PASSWORD:
         token = create_token(username)
-        return jsonify({"token":token})
-    else:
-        return jsonify({"error": "Credenciais invalidas"}), 401
-    
+        return jsonify({"token": token})
+    return jsonify({"error": "Credenciais inválidas"}), 401
 
 @app.route("/predict", methods=["POST"])
 @token_required
 def predict():
-    """
-    Endpoint protegido por token para obter predição.
-    Corpo (JSON):
-    {
-        "sepal_length": 5.1,
-        "sepal_width": 3.5,
-        "petal_length": 1.4,
-        "petal_width": 0.2
-    }
-    """
     data = request.get_json(force=True)
     try:
         sepal_length = float(data["sepal_length"])
@@ -92,50 +94,41 @@ def predict():
         petal_length = float(data["petal_length"])
         petal_width = float(data["petal_width"])
     except (ValueError, KeyError) as e:
-        logger.error("Dados de entrada inválidos: %s",e)
-        return jsonify ({"error":"Dados Inválidos, verifique os parâmetros"}), 400
-    
-    #Verificar se já esta no cache
+        logger.error("Dados de entrada inválidos: %s", e)
+        return jsonify({"error": "Dados inválidos, verifique os parâmetros"}), 400
+
     features = (sepal_length, sepal_width, petal_length, petal_width)
+
+    # Verifica cache
     if features in predictions_cache:
-        logger.info ("Cache hit para %s", features)
         predicted_class = predictions_cache[features]
+        logger.info("Cache hit para %s", features)
     else:
-        #rodar modelo
         input_data = np.array([features])
         prediction = model.predict(input_data)
         predicted_class = int(prediction[0])
-        #armazenar no cache
         predictions_cache[features] = predicted_class
-        logger.info("Cache updated para %s", features)
-    
-    #Armazenar no DB
+        logger.info("Cache atualizado para %s", features)
+
+    # Salva no banco
     db = SessionLocal()
     new_pred = Prediction(
-    sepal_length=sepal_length,
-    sepal_width=sepal_width,
-    petal_length=petal_length,
-    petal_width=petal_width,
-    predicted_class=predicted_class
+        sepal_length=sepal_length,
+        sepal_width=sepal_width,
+        petal_length=petal_length,
+        petal_width=petal_width,
+        predicted_class=predicted_class
     )
     db.add(new_pred)
     db.commit()
     db.close()
-    return jsonify ({"predicted_class":predicted_class, "message":"Predição realizada com sucesso"}), 200
 
+    return jsonify({"predicted_class": predicted_class})
 
 @app.route("/predictions", methods=["GET"])
 @token_required
 def list_predictions():
-    """
-    Lista as predições armazenadas no banco.
-    Parâmetros opcionais (via query string):
-        - limit(int): quantos registros retornar, padrão 30
-        - offset(int): a partir de qual registro começar, padrão 0
-    Exemplo:
-        /predictions?limit=5&offset=10
-    """
-    limit = int(request.args.get("limit",10))
+    limit = int(request.args.get("limit", 10))
     offset = int(request.args.get("offset", 0))
     db = SessionLocal()
     preds = db.query(Prediction).order_by(Prediction.id.desc()).limit(limit).offset(offset).all()
@@ -143,7 +136,7 @@ def list_predictions():
     results = []
     for p in preds:
         results.append({
-            "id":p.id,
+            "id": p.id,
             "sepal_length": p.sepal_length,
             "sepal_width": p.sepal_width,
             "petal_length": p.petal_length,
@@ -153,6 +146,6 @@ def list_predictions():
         })
     return jsonify(results)
 
+# --- Main ---
 if __name__ == "__main__":
-
     app.run(debug=True)
