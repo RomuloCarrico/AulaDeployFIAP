@@ -34,7 +34,8 @@ class Prediction(Base):
 #Cria as tabelas no banco de dados (Em prod usar Alembic)
 Base.metadata.create_all(engine)
 
-model = joblib.load("modelo_iris.pkl")
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "modelo_iris.pkl")
+model = joblib.load(MODEL_PATH)
 logger.info("Modelo carregado com sucesso.")
 
 app = Flask(__name__)
@@ -153,4 +154,5 @@ def list_predictions():
     return jsonify(results)
 
 if __name__ == "__main__":
+
     app.run(debug=True)
